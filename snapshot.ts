@@ -5,9 +5,9 @@ import { mkdirSync, createWriteStream } from "node:fs";
 import archiver from "archiver";
 import * as puppeteer from "puppeteer";
 import { HTTPResponse } from "puppeteer";
+import prompts from "prompts";
 
-const ROOT_URL = "https://www.889100.com/column/";
-const OUT_DIR = "snapshot";
+
 const MAX_PAGES = 10; // 無限巡回を防ぐ上限、メモリ使用量削減のためさらに減らす
 const BATCH_SIZE = 3; // メモリ解放のために、この数のページを処理した後に一時停止する
 
@@ -32,8 +32,41 @@ function isSameSite(root: URL, child: URL) {
 /* ------------------------------------------------------------------- */
 
 async function main() {
-  await fs.rm(OUT_DIR, { recursive: true, force: true });
-  mkdirSync(OUT_DIR, { recursive: true });
+  const response = await prompts([
+    {
+      type: "text",
+      name: "targetUrl",
+      message: "複製したいページのURLを入力してください",
+      validate: (value) => {
+        try {
+          new URL(value);
+          return true;
+        } catch {
+          return "有効なURLを入力してください";
+        }
+      },
+    },
+    {
+      type: "text",
+      name: "alias",
+      message: "ページのエイリアスを入力してください",
+      validate: (value) =>
+        value.length > 0 ? true : "エイリアスは必須です",
+    },
+  ]);
+
+  if (!response.targetUrl || !response.alias) {
+    console.log("処理を中断しました。");
+    return;
+  }
+
+  const { targetUrl, alias } = response;
+
+  const rootURL = new URL(targetUrl);
+  const outDir = path.join("snapshot", alias);
+
+  await fs.rm(outDir, { recursive: true, force: true });
+  mkdirSync(outDir, { recursive: true });
 
   const browser = await puppeteer.launch({
     headless: true,
@@ -46,7 +79,6 @@ async function main() {
     ],
   });
 
-  const rootURL = new URL(ROOT_URL);
   const queue: URL[] = [rootURL];
   const crawled = new Set<string>();
 
@@ -60,7 +92,7 @@ async function main() {
     console.log(`処理中: ${url.href} (${crawled.size}/${MAX_PAGES})`);
 
     try {
-      await handlePage(url, queue, rootURL, browser, crawled);
+      await handlePage(url, queue, rootURL, browser, crawled, outDir);
     } catch (error) {
       console.error(`ページ処理エラー: ${url.href}`, error);
     }
@@ -68,15 +100,16 @@ async function main() {
 
   await browser.close();
 
-  await zipDirectory(OUT_DIR, `${OUT_DIR}.zip`);
-  console.log(`✔ 完了: ${crawled.size} ページを ${OUT_DIR}.zip に保存`);
+  await zipDirectory(outDir, `${outDir}.zip`);
+  console.log(`✔ 完了: ${crawled.size} ページを ${outDir}.zip に保存`);
 }
 async function handlePage(
   url: URL,
   queue: URL[],
   rootURL: URL,
   browser: puppeteer.Browser,
-  crawled: Set<string>
+  crawled: Set<string>,
+  outDir: string
 ) {
   const page = await browser.newPage();
 
@@ -93,9 +126,9 @@ async function handlePage(
   });
 
   // 保存先ディレクトリの準備
-  const imgDir = path.join(OUT_DIR, "images");
+  const imgDir = path.join(outDir, "images");
   mkdirSync(imgDir, { recursive: true });
-  const cssDir = path.join(OUT_DIR, "css");
+  const cssDir = path.join(outDir, "css");
   mkdirSync(cssDir, { recursive: true });
 
   const assetPromises: Promise<void>[] = [];
@@ -217,7 +250,7 @@ async function handlePage(
   }
 
   // HTMLを保存
-  const filePath = path.join(OUT_DIR, localHtmlFile(url));
+  const filePath = path.join(outDir, localHtmlFile(url));
   await fs.writeFile(filePath, rewritten);
 
   // キューに新しいURLを追加
