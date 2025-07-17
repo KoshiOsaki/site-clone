@@ -35,44 +35,32 @@ async function main() {
   await fs.rm(OUT_DIR, { recursive: true, force: true });
   mkdirSync(OUT_DIR, { recursive: true });
 
-  // ブラウザ設定を最適化
   const browser = await puppeteer.launch({
-    headless: true, // メモリ使用量を削減するためにheadlessモードを使用
+    headless: true,
     args: [
       "--disable-extensions",
       "--disable-dev-shm-usage",
       "--disable-gpu",
       "--no-sandbox",
       "--disable-setuid-sandbox",
-      '--js-flags="--max-old-space-size=512"', // ブラウザ内部のJSメモリ制限
     ],
   });
 
   const rootURL = new URL(ROOT_URL);
-
-  // BFS 用キュー
   const queue: URL[] = [rootURL];
-  const visited = new Set<string>();
+  const crawled = new Set<string>();
 
-  let processedInBatch = 0;
-
-  while (queue.length && visited.size < MAX_PAGES) {
+  while (queue.length > 0 && crawled.size < MAX_PAGES) {
     const url = queue.shift()!;
-    if (visited.has(url.href)) continue;
-    visited.add(url.href);
+    if (crawled.has(url.href)) {
+      continue;
+    }
+    crawled.add(url.href);
 
-    console.log(`処理中: ${url.href} (${visited.size}/${MAX_PAGES})`);
+    console.log(`処理中: ${url.href} (${crawled.size}/${MAX_PAGES})`);
 
     try {
-      await handlePage(url, queue, rootURL, browser);
-      processedInBatch++;
-
-      // 一定数のページを処理したら、一時停止してメモリを解放
-      if (processedInBatch >= BATCH_SIZE) {
-        console.log(`メモリ解放のために一時停止します...`);
-        await new Promise((resolve) => setTimeout(resolve, 1000)); // 1秒間待機
-        processedInBatch = 0;
-      }
+      await handlePage(url, queue, rootURL, browser, crawled);
     } catch (error) {
       console.error(`ページ処理エラー: ${url.href}`, error);
     }
@@ -80,15 +68,15 @@ async function main() {
 
   await browser.close();
 
-  // 圧縮
   await zipDirectory(OUT_DIR, `${OUT_DIR}.zip`);
-  console.log(`✔ 完了: ${visited.size} ページを ${OUT_DIR}.zip に保存`);
+  console.log(`✔ 完了: ${crawled.size} ページを ${OUT_DIR}.zip に保存`);
 }
 async function handlePage(
   url: URL,
   queue: URL[],
   rootURL: URL,
-  browser: puppeteer.Browser
+  browser: puppeteer.Browser,
+  crawled: Set<string>
 ) {
   const page = await browser.newPage();
 
@@ -124,7 +112,7 @@ async function handlePage(
           const fpath = path.join(imgDir, fname);
           await fs.writeFile(fpath, buffer);
         } catch (e) {
-          console.error(`画像保存エラー: ${u.href}`, e);
+          console.error(`画像保存エラー: ${u.href}`);
         }
       })();
       assetPromises.push(promise);
@@ -162,17 +150,21 @@ async function handlePage(
   const { links, imgs, css } = await page.evaluate(() => {
     const anchors = Array.from(
       document.querySelectorAll<HTMLAnchorElement>("a")
-    ).map((a) => a.href);
+    ).map((a) => a.getAttribute("href"));
     const images = Array.from(
       document.querySelectorAll<HTMLImageElement>("img")
     ).map((i) => i.src);
     const stylesheets = Array.from(
       document.querySelectorAll('link[rel="stylesheet"]')
-    ).map((l) => l.getAttribute('href'));
+    ).map((l) => l.getAttribute("href"));
     return { links: anchors, imgs: images, css: stylesheets };
   });
 
   const html = await page.content();
+
+  // アセットのダウンロード時間を確保するために3秒待機
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+
   await page.close();
 
   let rewritten = html;
@@ -207,24 +199,43 @@ async function handlePage(
     }
   }
 
-  // 内部リンクを書き換え & キューへ追加
-  for (const link of links) {
+  // aタグのhrefをローカルパスに置換
+  for (const anchorHref of links) {
+    if (!anchorHref) continue;
     try {
-      const u = new URL(link, url);
-      if (!isSameSite(rootURL, u)) continue;
-      rewritten = rewritten.replace(
-        new RegExp(link.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"),
-        `./${localHtmlFile(u)}`
-      );
-      if (!queue.some((q) => q.href === u.href)) queue.push(u);
-    } catch {
-      /* ignore */
+      const u = new URL(anchorHref, url.href);
+      if (u.hostname === rootURL.hostname) {
+        const fname = localHtmlFile(u);
+        rewritten = rewritten.replace(
+          new RegExp(`href="${escapeRegExp(anchorHref)}"`, "g"),
+          `href="./${fname}"`
+        );
+      }
+    } catch (e) {
+      // ignore invalid URLs
     }
   }
 
   // HTMLを保存
   const filePath = path.join(OUT_DIR, localHtmlFile(url));
   await fs.writeFile(filePath, rewritten);
+
+  // キューに新しいURLを追加
+  for (const link of links) {
+    if (!link) continue;
+    try {
+      const nextURL = new URL(link, url.href);
+      if (
+        nextURL.hostname === rootURL.hostname &&
+        !queue.some((q) => q.href === nextURL.href) &&
+        !crawled.has(nextURL.href)
+      ) {
+        queue.push(nextURL);
+      }
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 async function zipDirectory(src: string, destZip: string) {
