@@ -7,9 +7,8 @@ import * as puppeteer from "puppeteer";
 import { HTTPResponse } from "puppeteer";
 import prompts from "prompts";
 
-
 const MAX_PAGES = 10; // 無限巡回を防ぐ上限、メモリ使用量削減のためさらに減らす
-const BATCH_SIZE = 3; // メモリ解放のために、この数のページを処理した後に一時停止する
+const AWAIT_TIME = 3000; // アセットのダウンロード時間を確保するために待機する時間
 
 /* ------------------------- ユーティリティ -------------------------- */
 function slug(url: URL): string {
@@ -50,8 +49,7 @@ async function main() {
       type: "text",
       name: "alias",
       message: "ページのエイリアスを入力してください",
-      validate: (value) =>
-        value.length > 0 ? true : "エイリアスは必須です",
+      validate: (value) => (value.length > 0 ? true : "エイリアスは必須です"),
     },
   ]);
 
@@ -196,7 +194,7 @@ async function handlePage(
   const html = await page.content();
 
   // アセットのダウンロード時間を確保するために3秒待機
-  await new Promise((resolve) => setTimeout(resolve, 3000));
+  await new Promise((resolve) => setTimeout(resolve, AWAIT_TIME));
 
   await page.close();
 
