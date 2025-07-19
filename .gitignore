@@ -1,2 +1,3 @@
 /node_modules
-/snapshot
+/snapshot/*
+!/snapshot/gakken_

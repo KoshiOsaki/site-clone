@@ -139,7 +139,11 @@ async function handlePage(
       const promise = (async () => {
         try {
           const buffer = await resp.buffer();
-          const fname = `${slug(u)}${path.extname(u.pathname)}`;
+          // URLパスから画像名を生成（/images2/com_icn_sns_fb.png -> images2_com_icn_sns_fb.png）
+          const pathWithoutLeadingSlash = u.pathname.startsWith("/")
+            ? u.pathname.substring(1)
+            : u.pathname;
+          const fname = pathWithoutLeadingSlash.replace(/\//g, "_");
           const fpath = path.join(imgDir, fname);
           await fs.writeFile(fpath, buffer);
         } catch (e) {
@@ -151,7 +155,23 @@ async function handlePage(
     } else if (ctype.startsWith("text/css")) {
       const promise = (async () => {
         try {
-          const buffer = await resp.text();
+          let buffer = await resp.text();
+
+          // CSS内のurl参照を置換
+          const urlRegex = /url\(['"]?(\/images2\/[^\)"']+)['"]?\)/g;
+          let match;
+          while ((match = urlRegex.exec(buffer)) !== null) {
+            const originalPath = match[1];
+            const pathWithoutLeadingSlash = originalPath.startsWith("/")
+              ? originalPath.substring(1)
+              : originalPath;
+            const fname = pathWithoutLeadingSlash.replace(/\//g, "_");
+            buffer = buffer.replace(
+              new RegExp(escapeRegExp(match[0]), "g"),
+              `url(../images/${fname})`
+            );
+          }
+
           const fname = `${slug(u)}.css`;
           const fpath = path.join(cssDir, fname);
           await fs.writeFile(fpath, buffer);
@@ -205,7 +225,22 @@ async function handlePage(
     if (!imgURL) continue;
     try {
       const u = new URL(imgURL);
-      const fname = `${slug(u)}${path.extname(u.pathname)}`;
+      // URLパスから画像名を生成（/images2/com_icn_sns_fb.png -> images2_com_icn_sns_fb.png）
+      const pathWithoutLeadingSlash = u.pathname.startsWith("/")
+        ? u.pathname.substring(1)
+        : u.pathname;
+      const fname = pathWithoutLeadingSlash.replace(/\//g, "_");
+
+      // 画像のパスを相対パスに変更（/images2/com_icn_sns_fb.png -> ./images2_com_icn_sns_fb.png）
+      const relativePath = `./${fname}`;
+
+      // imgタグのsrc属性を置換（/images2/com_icn_sns_fb.png -> ./images/images2_com_icn_sns_fb.png）
+      rewritten = rewritten.replace(
+        new RegExp(`src="${escapeRegExp(u.pathname)}"`, "g"),
+        `src="./images/${fname}"`
+      );
+
+      // 完全なURLも置換
       rewritten = rewritten.replace(
         new RegExp(escapeRegExp(imgURL), "g"),
         `./images/${fname}`
